@@ -18,6 +18,7 @@ import io.legado.app.model.analyzeRule.AnalyzeRule.Companion.setCoroutineContext
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.analyzeRule.RuleData
 import io.legado.app.ui.main.explore.ExploreAdapter.Companion.exploreInfoMapList
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
@@ -295,33 +296,48 @@ object WebBook {
         bookSource: BookSource,
         book: Book,
         runPerJs: Boolean = false,
-        isFromBookInfo : Boolean = false
+        isFromBookInfo : Boolean = false,
+        allowRetry: Boolean = true
     ): Result<List<BookChapter>> {
         val key = chapterListLoadKey(bookSource, book, runPerJs)
         val job = CoroutineScope(currentCoroutineContext()).async(start = CoroutineStart.LAZY) {
             loadChapterListAwait(bookSource, book, runPerJs, isFromBookInfo)
         }
+        // 任务结束时（成功/失败/被取消）都要从去重表里摘掉。
+        // 原来只在 await 成功返回后才 remove，一旦发起方被取消（退出页面、关掉书源调试、
+        // 后台更新目录被打断……）这个已取消的任务就会永久留在表里，
+        // 之后同一本书每次加载目录都会直接抛 "Job was cancelled"，只能杀进程恢复。
+        job.invokeOnCompletion { chapterListJobs.remove(key, job) }
         val runningJob = chapterListJobs.putIfAbsent(key, job)
-        return if (runningJob == null) {
-            job.await()
-                .onFailure {
-                    currentCoroutineContext().ensureActive()
-                }
-                .map { it.chapters }
-                .also {
-                    chapterListJobs.remove(key, job)
-                }
-        } else {
-            job.cancel()
-            runningJob.await()
-                .onSuccess {
-                    applyChapterListBookState(book, it.book)
-                }
+        if (runningJob == null) {
+            return job.await()
                 .onFailure {
                     currentCoroutineContext().ensureActive()
                 }
                 .map { it.chapters }
         }
+        job.cancel()
+        val runningResult = try {
+            runningJob.await()
+        } catch (e: CancellationException) {
+            // 自己没被取消，说明是被复用那个任务已经死了（历史遗留的已取消任务）
+            currentCoroutineContext().ensureActive()
+            chapterListJobs.remove(key, runningJob)
+            if (allowRetry) {
+                return getChapterListAwait(
+                    bookSource, book, runPerJs, isFromBookInfo, allowRetry = false
+                )
+            }
+            return Result.failure(e)
+        }
+        return runningResult
+            .onSuccess {
+                applyChapterListBookState(book, it.book)
+            }
+            .onFailure {
+                currentCoroutineContext().ensureActive()
+            }
+            .map { it.chapters }
     }
 
     private suspend fun loadChapterListAwait(

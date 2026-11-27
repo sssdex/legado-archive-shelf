@@ -11,9 +11,9 @@
 
 - 基线：`refgd/legado` 分支 `own`，commit `accef33`
 - 分支：`archive-shelf`
-- 包名：`com.legado.archiveshelf`（独立共存，不覆盖官方阅读R / 阅读）
+- 包名：`com.legado.archive`（独立共存，不覆盖官方阅读R / 阅读）
 - 桌面名：**阅读S**
-- 当前版本：`3.26.112523`（versionCode 10008）
+- 当前版本：`3.26.112723`（versionCode 10010，在 `3.26.112523` 基础上）
 - 安装包：见 [Releases](../../releases)（APK 不进仓库）
 
 ---
@@ -29,12 +29,10 @@
 | 触感 | 每滑过一本轻振一次，`Step=15ms`、振幅 150（约 0.59） |
 | 内置宋体 | 书名/作者/书脊竖排字全部用内置的**思源宋体 CN Medium**（`assets/font/archive_serif.ttf`，SIL OFL 1.1）：下方书名 10.6sp、作者 8.4sp、书脊 8.2sp。Android 自带 `Typeface.SERIF` 对中文会回落黑体，所以必须自带字库 |
 | 不透明纸面 | 主题背景色可能半透明（壁纸主题），纸面/书脊/顶面会先合成到「浅色白纸 / 深色黑纸」上再绘制，壁纸不会透进书页、相邻书的字也不会互相叠印 |
-| 档案格子底纹 | 书架背后那张 56dp 网格提升为**整个应用的窗口背景**（`ArchiveGridDrawable`）：书架、发现、书签、阅读统计、我的、设置、搜索、书籍详情、分组抽屉都是同一张纸（墨色 12/255、0.5dp 线、不透明纸色）。书架自己不再重复画网格；阅读正文页和壁纸主题不铺 |
 | 档案编号 | 封面上的 `NO.001` 与下方 `档案 / 001` 只在**当前抽出的那本书**上显示（缩进 26dp，非焦点书被右邻书脊压住） |
 | 数量 1–500 | 立体书架展示前 N 本（默认 12），封面按焦点窗口按需加载 + LRU 缓存，N 调到 500 也不会把内存吃满；书目列表始终是全部书 |
 | 书目 | `SHELF / CATALOGUE` 标题 + 排序按钮，56×76 封面缩略 + `档案 / 001` + 书名 + 作者 + 阅读进度 |
 | 分组抽屉 | 点左上角分组图标（或标题里的「全部 ▾」）从左侧滑出，按 `01 全部 / 02 分组名 …` 列出，底部「分组管理」。抽屉面板是不透明实心纸色 |
-| 长按开详情 | 长按抽出的那本书进详情页时，封面从书架的斜投影四边形**拉直**飞到详情页封面位，书架快照同步淡出；返回时原路飞回原位。时间轴照 AzukiReader / Wenku8（去程 120/350/580ms、回程 180/460/740/840ms，中段抬高 24dp）。系统关闭动画、封面未加载、书架被滚动裁掉、从书目/搜索进详情时不播，保持原来的硬切 |
 | 可折叠 | 「收起书架」只留书目，按钮变「展开书架」 |
 | 随主题 | 纸色、墨色、分隔线、网格底纹全部取当前主题色，夜间模式自动跟随 |
 
@@ -54,16 +52,15 @@
 2. **默认图标**：见上。
 3. **应用名**：见上。
 
-### 5. 第七版
+### 5. 3.26.112723（在 3.26.112523 基础上）
 
-1. **全应用档案格子背景**：新增 `ArchiveGridDrawable`，把立体书架背后的 56dp 网格提升为整个 Activity 的窗口背景
-   （`BaseActivity.applyWindowBackgroundColor`）。书架、发现、书签、阅读统计、我的、设置、搜索、书籍详情、分组抽屉都是同一张纸；
-   书架自己不再重复画网格；阅读正文页（`BaseReadBookActivity`）和启动页（`WelcomeActivity`）显式关掉，壁纸主题保留壁纸。
-2. **长按开详情的封面飞行**：新增 `ArchiveCoverFlight`，长按书架抽出的那本书进详情页时，封面从书架的斜投影四边形
-   用 `Matrix.setPolyToPoly` 逐帧拉直飞到详情页封面位，书架快照同步淡出；返回时原路飞回。时间轴照 AzukiReader / Wenku8
-   （去程 120/350/580ms、回程 180/460/740/840ms，中段抬高 24dp）；系统关闭动画、封面未加载、从书目/搜索进详情时不播。
-3. **包名改为 `com.legado.archiveshelf`**：与旧的 `com.legado.archive` 并存安装、数据各自独立；旧书架可在旧包
-   「我的 → 备份与恢复」导出，再导入新包。
+只改一处：`app/src/main/java/io/legado/app/model/webBook/WebBook.kt` 的 `getChapterListAwait`。
+
+- 并发去重表 `chapterListJobs` 原来只在发起方 await 正常返回后才 `remove`；发起方被取消（退出详情页、关书源调试页、
+  后台更新目录被打断）时异常抛出，清理被跳过，表里留下一个已取消的任务。之后同一本书每次加载目录都会 await 这个死任务，
+  立刻抛 `Job was cancelled`，同一进程内永不恢复。
+- 现在 `invokeOnCompletion` 时无论成功/失败/取消都摘掉；复用到的任务若已取消，清表并重试一次。
+- 上一版（第七版）的全应用格子背景、封面飞行、`com.legado.archiveshelf` 包名**不再发布**，代码仍在 git 历史里（commit `fc5a1dd`）。
 
 ---
 
@@ -85,10 +82,10 @@ export JAVA_HOME=D:/android-build/jdk
 export GRADLE_USER_HOME=D:/gradle-home        # 必须与工程同盘，见下面第 1 个坑
 cd legado
 
-# 调试包（com.legado.archiveshelf.debug）
+# 调试包（com.legado.archive.debug）
 gradle :app:assembleDebug
 
-# 签名 release（com.legado.archiveshelf）
+# 签名 release（com.legado.archive）
 gradle :app:assembleRelease -PskipVitalLint=true \
   -PRELEASE_STORE_FILE=/path/to/legado-archive.jks \
   -PRELEASE_STORE_PASSWORD=legado123 \
@@ -133,7 +130,6 @@ gradle :app:assembleRelease -PskipVitalLint=true \
 - 抽屉只列「有书的分组」。
 - 左边缘 20dp 内横滑会被 DrawerLayout 当作开抽屉手势。
 - 循环书架在数量很小时会看到重复书影（可视窗口约 30 lane，12 本时左右远端各重复一次），是循环的固有表现。
-- 长按开详情的封面飞行依赖书架封面已经解码；首屏还没加载完就长按会退回直接打开。返回前如果离开过详情页（进阅读器、切后台），书架可能已重排，回程动画会自动跳过。
 - 内置宋体让 APK 从 32.0 MB 涨到约 39.6 MB。
 
 ---
@@ -144,7 +140,7 @@ gradle :app:assembleRelease -PskipVitalLint=true \
 
 - 只动书架首页（新增 `ui/main/bookshelf/archive/` 与对应布局/字符串/设置项），外加应用名与默认图标；
   阅读器、书源、订阅、发现页、备份格式、数据库结构（Room 版本不变）均未改。
-- 上游原版功能与本改版可以同时装在手机上，数据各自独立（`com.legado.archiveshelf` vs `io.legado.app`）。
+- 上游原版功能与本改版可以同时装在手机上，数据各自独立（`com.legado.archive` vs `io.legado.app`）。
 - 未向上游提 PR；本分支仅用于发布改版。
 
 **仓库与同步上游**

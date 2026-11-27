@@ -23,9 +23,6 @@ open class WelcomeActivity : BaseActivity<ActivityWelcomeBinding>() {
 
     override val binding by viewBinding(ActivityWelcomeBinding::inflate)
 
-    /** 启动页保留原来的欢迎背景（浅色底 + 居中图标），不铺档案格子 */
-    override val useArchiveGridBackground: Boolean get() = false
-
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         if (intent.flags and Intent.FLAG_ACTIVITY_BROUGHT_TO_FRONT != 0) {
             // 避免从桌面启动程序后，会重新实例化入口类的activity

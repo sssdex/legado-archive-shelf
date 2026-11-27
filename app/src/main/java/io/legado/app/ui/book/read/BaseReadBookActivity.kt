@@ -62,8 +62,6 @@ abstract class BaseReadBookActivity :
 
     override val binding by viewBinding(ActivityBookReadBinding::inflate)
     override val viewModel by viewModels<ReadBookViewModel>()
-    /** 正文页不铺格子：阅读背景有自己的纸面，格子会透到字底下 */
-    override val useArchiveGridBackground: Boolean get() = false
     protected val menuLayoutIsVisible
         get() = bottomDialog > 0 || binding.readMenu.isVisible || binding.searchMenu.bottomMenuVisible
 

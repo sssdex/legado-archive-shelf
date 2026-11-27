@@ -32,7 +32,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
@@ -105,12 +104,6 @@ import io.legado.app.ui.book.toc.BookTocLoadingActivity
 import io.legado.app.ui.book.toc.TocActivityResult
 import io.legado.app.ui.file.HandleFileContract
 import io.legado.app.ui.login.SourceLoginActivity
-import io.legado.app.ui.main.bookshelf.archive.ArchiveCoverFlight
-import io.legado.app.ui.main.bookshelf.archive.ArchiveCoverFlightOverlay
-import io.legado.app.ui.main.bookshelf.archive.ArchiveCoverFlightStore
-import io.legado.app.ui.main.bookshelf.archive.EXTRA_COVER_FLIGHT
-import io.legado.app.ui.main.bookshelf.archive.archiveFlightAnimationsEnabled
-import io.legado.app.ui.main.bookshelf.archive.overrideArchiveCloseTransitionNone
 import io.legado.app.ui.video.VideoPlayerActivity
 import io.legado.app.ui.widget.dialog.PhotoDialog
 import io.legado.app.ui.widget.dialog.VariableDialog
@@ -269,21 +262,6 @@ class BookInfoActivity :
     private var initIntroView = false
     private var introLoadingVisible = false
     private var tocLoadingVisible = false
-
-    /** 书架长按进来时的飞行素材；回程要用它飞回原位，所以整个详情页期间都留着 */
-    private var coverFlight: ArchiveCoverFlight? = null
-    private var coverFlightOverlay: ArchiveCoverFlightOverlay? = null
-    private var coverFlightReturning = false
-
-    /** 去程落位动画是否走完 */
-    private var coverFlightLanded = false
-
-    /** 详情页封面位图是否已经就绪（Glide 回调） */
-    private var coverFlightCoverReady = false
-    private var coverFlightRemoveRunnable: Runnable? = null
-
-    /** 离开过详情页（进阅读器/切后台）：书架可能已重排，回程落点不再可信 */
-    private var coverFlightInvalidated = false
     private val introTextView by lazy {
         initIntroView = true
         val inflater = LayoutInflater.from(this)
@@ -325,8 +303,6 @@ class BookInfoActivity :
 
     @SuppressLint("PrivateResource")
     override fun onActivityCreated(savedInstanceState: Bundle?) {
-        // 放在最前面：详情页第一帧就要带着书架快照和飞行封面，晚了会先闪一下详情页
-        beginCoverFlight(savedInstanceState)
         binding.titleBar.setBackgroundColor(Color.TRANSPARENT)
         binding.titleBar.toolbar.setBackgroundColor(Color.TRANSPARENT)
         binding.titleBar.setTextColor(primaryTextColor)
@@ -357,119 +333,6 @@ class BookInfoActivity :
         showTocLoading(true)
         viewModel.initData(intent)
         initViewEvent()
-    }
-
-    // ------------------------------------------------------------------ 书架 → 详情封面飞行
-
-    /**
-     * 从档案式书架长按进来时，第一帧就挂上「书架快照 + 飞行封面」。
-     *
-     * token 取走即作废；重建（[savedInstanceState] 非空）不重放，
-     * 也因此不会在横竖屏切换后播一半。任何一步失败都静默退回普通详情页。
-     */
-    private fun beginCoverFlight(savedInstanceState: Bundle?) {
-        if (savedInstanceState != null) return
-        val token = intent.getStringExtra(EXTRA_COVER_FLIGHT) ?: return
-        intent.removeExtra(EXTRA_COVER_FLIGHT)
-        if (!archiveFlightAnimationsEnabled()) {
-            ArchiveCoverFlightStore.drop(token)
-            return
-        }
-        val flight = ArchiveCoverFlightStore.take(token) ?: return
-        coverFlight = flight
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (!returnToArchiveShelf()) finish()
-            }
-        })
-        startCoverFlightOverlay(returning = false)
-    }
-
-    private fun startCoverFlightOverlay(returning: Boolean) {
-        val flight = coverFlight ?: return
-        coverFlightRemoveRunnable?.let { binding.root.removeCallbacks(it) }
-        coverFlightRemoveRunnable = null
-        coverFlightOverlay?.remove()
-        coverFlightOverlay = null
-        val overlay = ArchiveCoverFlightOverlay(this, flight)
-        coverFlightOverlay = overlay
-        overlay.onFinished = { completed ->
-            if (returning) {
-                coverFlightOverlay = null
-                // 起飞失败也要走人，否则返回键被吃掉后没有任何反应
-                if (completed) overrideArchiveCloseTransitionNone()
-                finish()
-            } else {
-                coverFlightLanded = true
-                // 详情页封面还没加载完就多压一会儿，避免落位瞬间闪一下占位封面
-                if (coverFlightCoverReady) {
-                    dismissForwardFlight()
-                } else {
-                    val runnable = Runnable { dismissForwardFlight() }
-                    coverFlightRemoveRunnable = runnable
-                    binding.root.postDelayed(runnable, 400)
-                }
-            }
-        }
-        if (returning) {
-            overlay.showReturn(binding.ivCover)
-        } else {
-            overlay.showForward(binding.ivCover)
-        }
-    }
-
-    /** 去程落位后撤掉覆盖层。 */
-    private fun dismissForwardFlight() {
-        coverFlightRemoveRunnable?.let { binding.root.removeCallbacks(it) }
-        coverFlightRemoveRunnable = null
-        coverFlightOverlay?.remove()
-        coverFlightOverlay = null
-    }
-
-    /** 详情页封面加载完（成功或失败）时叫一声：如果飞行已经落位，立刻撤掉覆盖层。 */
-    private fun onCoverFlightCoverReady() {
-        coverFlightCoverReady = true
-        if (coverFlightLanded) dismissForwardFlight()
-    }
-
-    /**
-     * 返回时反着飞回书架原位。
-     *
-     * 只接管「从书架长按进来」且书没换、屏幕尺寸没变、封面还在屏内的情况；
-     * 删除书籍、目录页回传等直接 finish 的路径不走这里，避免书已经不在了还飞回去。
-     */
-    private fun returnToArchiveShelf(): Boolean {
-        val flight = coverFlight ?: return false
-        if (coverFlightReturning || coverFlightInvalidated || isFinishing) return false
-        if (!archiveFlightAnimationsEnabled()) return false
-        val book = viewModel.getBook(false) ?: return false
-        if (book.bookUrl != flight.bookUrl) return false
-        val metrics = resources.displayMetrics
-        if (!flight.matchesScreen(metrics.widthPixels, metrics.heightPixels)) return false
-        val location = IntArray(2)
-        binding.ivCover.getLocationOnScreen(location)
-        val top = location[1]
-        val bottom = top + binding.ivCover.height
-        if (bottom <= 0 || top >= metrics.heightPixels) return false
-        coverFlightReturning = true
-        startCoverFlightOverlay(returning = true)
-        return true
-    }
-
-    /**
-     * 标题栏返回走的是 `BaseActivity.onOptionsItemSelected(android.R.id.home)` →
-     * `supportFinishAfterTransition()`，不经过返回键分发，这里补一道同样的接管。
-     */
-    override fun finishAfterTransition() {
-        if (returnToArchiveShelf()) return
-        super.finishAfterTransition()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        // 只要离开过详情页（进阅读器、切后台……），书架可能已经重新排序，
-        // 冻结快照上的落点就不再可信，回程直接退回普通关闭
-        if (coverFlight != null && !coverFlightReturning) coverFlightInvalidated = true
     }
 
     private fun applyUiCorners() = binding.run {
@@ -1060,7 +923,6 @@ class BookInfoActivity :
     private fun showCover(book: Book) {
         binding.ivCover.load(book, false) {
             applyBookInfoBackground()
-            onCoverFlightCoverReady()
         }
     }
 
@@ -2019,11 +1881,6 @@ class BookInfoActivity :
      }
 
     override fun onDestroy() {
-        coverFlightRemoveRunnable?.let { binding.root.removeCallbacks(it) }
-        coverFlightRemoveRunnable = null
-        coverFlightOverlay?.remove()
-        coverFlightOverlay = null
-        coverFlight = null
         destroyWeb()
         super.onDestroy()
         if (initGetter) {

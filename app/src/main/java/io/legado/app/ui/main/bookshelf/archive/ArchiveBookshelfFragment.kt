@@ -65,9 +65,7 @@ class ArchiveBookshelfFragment() : BaseBookshelfFragment(R.layout.fragment_archi
 
     private val binding by viewBinding(FragmentArchiveBookshelfBinding::bind)
     private val catalogueAdapter by lazy {
-        ArchiveCatalogueAdapter(this, viewLifecycleOwner.lifecycle, ::openBook) { book ->
-            openBookInfo(book)
-        }
+        ArchiveCatalogueAdapter(this, viewLifecycleOwner.lifecycle, ::openBook, ::openBookInfo)
     }
     private val headerAdapter by lazy {
         ArchiveShelfHeaderAdapter(::openBook, ::openBookInfo)
@@ -95,9 +93,8 @@ class ArchiveBookshelfFragment() : BaseBookshelfFragment(R.layout.fragment_archi
         (binding.root as? DrawerLayout)?.let {
             it.setScrimColor(0x66000000)
         }
-        // 抽屉面板必须实心：主题背景色在壁纸主题下带 alpha，直接铺会让书架/壁纸透上来；
-        // 用和窗口同一张档案网格纸，抽屉拉出来也是同一张纸
-        binding.drawerPanel.background = ArchiveGridDrawable(requireContext())
+        // 抽屉面板必须实心：主题背景色在壁纸主题下带 alpha，直接铺会让书架/壁纸透上来
+        binding.drawerPanel.setBackgroundColor(ArchivePalette.paper(requireContext()))
         // DrawerLayout 的抽屉面板收不到(或晚于布局收到)状态栏 inset，这里直接按系统状态栏高度补
         val statusBarHeight = resources.getIdentifier("status_bar_height", "dimen", "android")
             .takeIf { it > 0 }
@@ -284,51 +281,7 @@ class ArchiveBookshelfFragment() : BaseBookshelfFragment(R.layout.fragment_archi
         startActivityForBook(book)
     }
 
-    /**
-     * 打开书籍详情。
-     *
-     * 从立体书架长按进来时带 [shelf]：先量出封面四角、裁好飞行封面、截一张
-     * 「封面已经离开」的书架快照，再把详情页以零转场拉起，由详情页首帧接管这段连贯动画。
-     * 书目列表或任何一步失败就退回原来的直接启动。
-     */
-    private fun openBookInfo(book: Book, shelf: ArchiveShelfView? = null) {
-        val flight = shelf
-            ?.takeIf { archiveFlightAnimationsEnabled() }
-            ?.prepareCoverFlight(book.bookUrl)
-        if (flight != null) {
-            val activity = requireActivity()
-            shelf.suppressCoverForSnapshot(book.bookUrl)
-            val backdrop = captureArchiveBackdrop(activity)
-            shelf.suppressCoverForSnapshot(null)
-            if (backdrop != null) {
-                val metrics = resources.displayMetrics
-                val token = ArchiveCoverFlightStore.offer(
-                    ArchiveCoverFlight(
-                        bookUrl = book.bookUrl,
-                        cover = flight.cover,
-                        sourceCover = flight.sourceCover,
-                        shelfQuad = flight.quad,
-                        backdrop = backdrop.bitmap,
-                        backdropScale = backdrop.scale,
-                        backdropOriginX = backdrop.originX,
-                        backdropOriginY = backdrop.originY,
-                        screenWidth = metrics.widthPixels,
-                        screenHeight = metrics.heightPixels,
-                    )
-                )
-                startActivity(
-                    android.content.Intent(requireContext(), BookInfoActivity::class.java).apply {
-                        putExtra("name", book.name)
-                        putExtra("author", book.author)
-                        putExtra(EXTRA_COVER_FLIGHT, token)
-                    },
-                    // 详情页首帧就挂着书架快照，系统自带的活动转场会把两帧叠在一起，
-                    // 这里用零动画的 ActivityOptions 关掉（overridePendingTransition 在新版本上不吃这个）
-                    android.app.ActivityOptions.makeCustomAnimation(requireContext(), 0, 0).toBundle(),
-                )
-                return
-            }
-        }
+    private fun openBookInfo(book: Book) {
         startActivity<BookInfoActivity> {
             putExtra("name", book.name)
             putExtra("author", book.author)

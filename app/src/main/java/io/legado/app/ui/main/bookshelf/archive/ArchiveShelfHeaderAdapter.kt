@@ -13,7 +13,7 @@ import io.legado.app.databinding.ItemArchiveShelfHeaderBinding
  */
 class ArchiveShelfHeaderAdapter(
     private val onOpen: (Book) -> Unit,
-    private val onInfo: (Book, ArchiveShelfView?) -> Unit
+    private val onInfo: (Book) -> Unit
 ) : RecyclerView.Adapter<ArchiveShelfHeaderAdapter.Holder>() {
 
     private var books: List<Book> = emptyList()
@@ -55,8 +55,7 @@ class ArchiveShelfHeaderAdapter(
             archiveShelf.visibility = if (showShelf) View.VISIBLE else View.GONE
             if (showShelf) {
                 archiveShelf.onBookClick = onOpen
-                // 详情页的封面飞行要从书架本体取几何，这里把视图一起带出去
-                archiveShelf.onBookLongClick = { book -> onInfo(book, archiveShelf) }
+                archiveShelf.onBookLongClick = onInfo
                 archiveShelf.setBooks(books, visibleCount)
             }
             btnToggleShelf.visibility = if (books.isEmpty()) View.GONE else View.VISIBLE

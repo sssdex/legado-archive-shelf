@@ -28,7 +28,6 @@ import io.legado.app.lib.theme.UiCorner
 import io.legado.app.lib.theme.applyUiBodyTypeface
 import io.legado.app.lib.theme.applyUiMenuTypefaceDeep
 import io.legado.app.service.ExportBookService
-import io.legado.app.ui.main.bookshelf.archive.ArchiveGridDrawable
 import io.legado.app.ui.widget.TitleBar
 import io.legado.app.utils.ColorUtils
 import io.legado.app.utils.applyMenuScrollIndicators
@@ -54,12 +53,6 @@ abstract class BaseActivity<VB : ViewBinding>(
 
     protected abstract val binding: VB
     private var lastThemeValuesChanged = 0L
-
-    /**
-     * 档案格子背景：主界面、设置、搜索、统计等默认都铺；
-     * 阅读页关掉，正文纸面有自己的背景，格子会从字底下透出来。
-     */
-    open val useArchiveGridBackground: Boolean get() = true
 
     val isInMultiWindow: Boolean
         @SuppressLint("ObsoleteSdkInt")
@@ -211,12 +204,7 @@ abstract class BaseActivity<VB : ViewBinding>(
 
     private fun applyWindowBackgroundColor() {
         ViewCompat.setBackgroundTintList(window.decorView, null)
-        if (useArchiveGridBackground && !AppConfig.isEInkMode) {
-            // 档案纸：不透明纸面 + 56dp 格子，和立体书架同一张底纹
-            window.decorView.background = ArchiveGridDrawable(this)
-        } else {
-            window.decorView.setBackgroundColor(ThemeConfig.getFallbackBackgroundColor(this))
-        }
+        window.decorView.setBackgroundColor(ThemeConfig.getFallbackBackgroundColor(this))
     }
 
     private fun applyInitialWindowBackground() {

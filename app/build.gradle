@@ -53,7 +53,7 @@ android {
     }
     defaultConfig {
         // 档案式书架共存版：独立的包名，可以和官方 阅读R / 原版阅读 同时安装
-        applicationId "com.legado.archiveshelf"
+        applicationId "com.legado.archive"
         minSdk 21
         targetSdk 36
         versionCode buildVersionCode

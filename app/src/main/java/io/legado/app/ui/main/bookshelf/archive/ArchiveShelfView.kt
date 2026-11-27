@@ -73,14 +73,6 @@ class ArchiveShelfView @JvmOverloads constructor(
     private var books: List<Book> = emptyList()
     private var focus = 0f
 
-    /**
-     * 截书架快照时临时藏起的封面。
-     *
-     * 打开详情页的飞行需要一张「封面已经离开」的书架底图，
-     * 否则底图里的封面会和飞行中的封面重叠成两本。
-     */
-    private var hiddenCoverUrl: String? = null
-
     // ---- 尺寸（dp） ----
     private var contentWidthDp = 0f
     private var coverDp = 0f
@@ -235,82 +227,6 @@ class ArchiveShelfView @JvmOverloads constructor(
         invalidate()
     }
 
-    // ------------------------------------------------------------------ 详情页封面飞行
-
-    /**
-     * 截书架快照时把某本封面藏起来（传 null 恢复）。
-     *
-     * 只影响绘制，不改数据：长按打开详情页时先藏住焦点封面再截快照，
-     * 飞行中的封面才有地方可落，不会和底图里的封面重叠成两本。
-     */
-    internal fun suppressCoverForSnapshot(bookUrl: String?) {        if (hiddenCoverUrl == bookUrl) return
-        hiddenCoverUrl = bookUrl
-    }
-
-    /**
-     * 准备长按打开详情页的飞行素材。
-     *
-     * 只对当前抽出的那本有效。四角必须和 [drawVolume] 里的平行投影完全一致，
-     * 这样飞行封面的第一帧才能和书架上的封面严丝合缝地叠在一起。
-     */
-    internal fun prepareCoverFlight(bookUrl: String): ArchiveShelfCoverFlight? {
-        if (books.isEmpty() || width == 0 || coverDp <= 0f) return null
-        val lane = focus.roundToInt()
-        val index = ArchiveShelfGeometry.bookIndex(lane, books.size)
-        val book = books.getOrNull(index) ?: return null
-        if (book.bookUrl != bookUrl) return null
-        val source = covers[bookUrl]?.takeIf { !it.isRecycled } ?: return null
-
-        // 和 drawCenterCrop 同一个中心裁剪口径
-        val imageRect = coverImageRect()
-        if (imageRect.width() <= 0f || imageRect.height() <= 0f) return null
-        val scale = max(imageRect.width() / source.width, imageRect.height() / source.height)
-        if (!scale.isFinite() || scale <= 0f) return null
-        val srcWidth = imageRect.width() / scale
-        val srcHeight = imageRect.height() / scale
-        val src = Rect(
-            ((source.width - srcWidth) / 2f).roundToInt().coerceIn(0, (source.width - 1).coerceAtLeast(0)),
-            ((source.height - srcHeight) / 2f).roundToInt().coerceIn(0, (source.height - 1).coerceAtLeast(0)),
-            ((source.width + srcWidth) / 2f).roundToInt().coerceIn(1, source.width),
-            ((source.height + srcHeight) / 2f).roundToInt().coerceIn(1, source.height),
-        )
-        if (src.width() <= 0 || src.height() <= 0) return null
-        // 硬件位图不能读像素，createBitmap 会抛异常，这里直接放弃飞行
-        val cropped = runCatching {
-            Bitmap.createBitmap(source, src.left, src.top, src.width(), src.height())
-        }.getOrNull() ?: return null
-
-        // 与 drawVolume 的 canvas.translate + coverMatrix 同一口径：
-        // x' = originX + 0.66x + spine，y' = originY - 0.30x + y + 0.10spine
-        val originX = dp(laneOriginX(lane))
-        val originY = dp(laneOriginY(lane))
-        val spine = dp(spineDp)
-        val corners = floatArrayOf(
-            imageRect.left, imageRect.top,
-            imageRect.right, imageRect.top,
-            imageRect.right, imageRect.bottom,
-            imageRect.left, imageRect.bottom,
-        )
-        val location = IntArray(2)
-        getLocationOnScreen(location)
-        val quad = FloatArray(8)
-        for (corner in 0 until 4) {
-            val x = corners[corner * 2]
-            val y = corners[corner * 2 + 1]
-            quad[corner * 2] = originX + ArchiveShelfGeometry.DEPTH_X * x + spine + location[0]
-            quad[corner * 2 + 1] =
-                originY + ArchiveShelfGeometry.DEPTH_Y * x + y + spine * 0.10f + location[1]
-        }
-        // 书架被列表滚掉一半时封面会跨出可见区，飞起来会压到列表上方的控件，直接不飞
-        val visible = Rect()
-        if (!getGlobalVisibleRect(visible)) return null
-        for (corner in 0 until 4) {
-            if (quad[corner * 2] < visible.left || quad[corner * 2] > visible.right) return null
-            if (quad[corner * 2 + 1] < visible.top || quad[corner * 2 + 1] > visible.bottom) return null
-        }
-        return ArchiveShelfCoverFlight(cropped, source, quad)
-    }
-
     // ------------------------------------------------------------------ 尺寸
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -378,7 +294,7 @@ class ArchiveShelfView @JvmOverloads constructor(
         val last = poolCenter + radius + 1
         val activeLane = focus.roundToInt()
 
-        // 网格已经提到窗口背景（ArchiveGridDrawable），这里不再重复画，避免两层格子错位
+        drawGrid(canvas)
         for (lane in first..last) {
             drawShadow(canvas, lane)
         }
@@ -401,6 +317,23 @@ class ArchiveShelfView @JvmOverloads constructor(
         val weight = ArchiveShelfGeometry.weight(distance)
         return ArchiveShelfGeometry.originY(coverDp, heightDp, weight) +
             ArchiveShelfGeometry.rail(distance)
+    }
+
+    private fun drawGrid(canvas: Canvas) {
+        val step = dp(56f)
+        val bottom = dp(shelfHeightDp) - dp(24f)
+        strokePaint.color = withAlpha(inkColor, 12)
+        strokePaint.strokeWidth = dp(0.5f)
+        var x = (width % step) / 2f
+        while (x < width) {
+            canvas.drawLine(x, 0f, x, bottom, strokePaint)
+            x += step
+        }
+        var y = dp(24f)
+        while (y < bottom) {
+            canvas.drawLine(0f, y, width.toFloat(), y, strokePaint)
+            y += step
+        }
     }
 
     private fun drawShadow(canvas: Canvas, lane: Int) {
@@ -540,7 +473,7 @@ class ArchiveShelfView @JvmOverloads constructor(
         canvas.drawRect(dp(0.25f), dp(0.25f), cover - dp(0.25f), height - dp(0.25f), strokePaint)
 
         monoPaint.color = inkColor
-        monoPaint.textSize = LABEL_TEXT_SP * scaledDensity
+        monoPaint.textSize = 7.2f * scaledDensity
         // NO.00x 和底部的 档案 / 00x 都只画在抽出来的那本书上，并且往封面内侧收，
         // 免得「还没滑到这本就看到编号」。两者用同一个缩进，上下对齐。
         if (showCode) {
@@ -558,14 +491,12 @@ class ArchiveShelfView @JvmOverloads constructor(
             )
         }
 
-        if (!withImage || book.bookUrl == hiddenCoverUrl) return
-        val imageRect = coverImageRect()
+        if (!withImage) return
+        val top = dp(9f) + monoPaint.textSize * 1.2f + dp(5f)
+        val bottom = height - dp(8f) - monoPaint.textSize * 1.2f - dp(4f)
         val bitmap = covers[book.bookUrl]
-        if (bitmap != null && !bitmap.isRecycled && imageRect.height() > 0f) {
-            drawCenterCrop(
-                canvas, bitmap,
-                imageRect.left, imageRect.top, imageRect.right, imageRect.bottom
-            )
+        if (bitmap != null && !bitmap.isRecycled && bottom > top) {
+            drawCenterCrop(canvas, bitmap, padH, top, cover - padH, bottom)
         } else {
             // 封面未就绪时保持一张白纸，和远端书一致
             textPaint.color = withAlpha(inkColor, 120)
@@ -580,11 +511,11 @@ class ArchiveShelfView @JvmOverloads constructor(
                 (cover - padH * 2f).coerceAtLeast(1f),
                 TextUtils.TruncateAt.END
             ).toString()
-            val available = imageRect.height()
+            val available = (bottom - top)
             if (available > textPaint.textSize * 2) {
                 canvas.drawText(
-                    name, imageRect.left,
-                    imageRect.top + available / 2f, textPaint
+                    name, padH,
+                    top + available / 2f, textPaint
                 )
             }
             textPaint.typeface = bodyTypeface
@@ -986,8 +917,6 @@ class ArchiveShelfView @JvmOverloads constructor(
             val coverPath = Restore.normalizeLocalCoverPath(book.getDisplayCover())
             ImageLoader.loadBitmap(context, coverPath)
                 .override(width * 2, height * 2)
-                // 封面要被裁出来做详情页飞行、也要能画进软件画布做快照，硬件位图读不了像素
-                .disallowHardwareConfig()
                 .into(target)
         }.onFailure {
             coverTargets.remove(book.bookUrl)
@@ -1010,17 +939,6 @@ class ArchiveShelfView @JvmOverloads constructor(
 
     private fun dp(value: Float): Float = value * density
 
-    /** 封面图区（NO. 编号与底部档案编号之间）在封面局部坐标里的矩形，px。 */
-    private fun coverImageRect(): RectF {
-        val cover = dp(coverDp)
-        val height = dp(heightDp)
-        val padH = dp(10f)
-        val label = LABEL_TEXT_SP * scaledDensity
-        val top = dp(9f) + label * 1.2f + dp(5f)
-        val bottom = height - dp(8f) - label * 1.2f - dp(4f)
-        return RectF(padH, top, cover - padH, bottom)
-    }
-
     private fun withAlpha(color: Int, alpha: Int): Int =
         Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
@@ -1042,9 +960,6 @@ class ArchiveShelfView @JvmOverloads constructor(
          * （屏上约 17dp），非焦点书上的编号就被彻底盖住了；抽出后的书整张封面可见，编号正常显示。
          */
         const val LABEL_INSET_DP = 26f
-
-        /** 封面上 NO.001 / 档案编号的字号（sp） */
-        const val LABEL_TEXT_SP = 7.2f
 
         /** 焦点左右各预载几本的封面（远一点的只画纸面） */
         const val COVER_PRELOAD_LANES = 4
