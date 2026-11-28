@@ -13,7 +13,7 @@
 - 分支：`archive-shelf`
 - 包名：`com.legado.archive`（独立共存，不覆盖官方阅读R / 阅读）
 - 桌面名：**阅读S**
-- 当前版本：`3.26.112723`（versionCode 10010，在 `3.26.112523` 基础上）
+- 当前版本：`3.26.112830`（versionCode 10014；在 `3.26.112523` 基础上）
 - 安装包：见 [Releases](../../releases)（APK 不进仓库）
 
 ---
@@ -61,6 +61,27 @@
   立刻抛 `Job was cancelled`，同一进程内永不恢复。
 - 现在 `invokeOnCompletion` 时无论成功/失败/取消都摘掉；复用到的任务若已取消，清表并重试一次。
 - 上一版（第七版）的全应用格子背景、封面飞行、`com.legado.archiveshelf` 包名**不再发布**，代码仍在 git 历史里（commit `fc5a1dd`）。
+
+### 6. 3.26.112800（听书播放不再卡书架）
+
+听书 / 音频书在播时 `AudioPlayService.upPlayProgress()` 每 500ms → `AudioPlay.playPositionChanged()` → `saveRead()`，
+往 `books` 表写一次；`ArchiveBookshelfFragment` 监听整张 `BOOK_TABLE`，就跟着重新查询、重排、`notifyItemChanged(0)`
+重绑头部，`ArchiveShelfView.setBooks()` 又把 `focus` 折成整数——手滑到半格就被拽回最近一本，两次刷新之间在相邻两本之间跳。
+
+- `ArchiveShelfGeometry`：新增 `sameArchiveOrder` / `sameArchiveDisplay`，只比书架真正画的字段（顺序、书名、作者、封面），进度字段不算变化。
+- `ArchiveShelfHeaderAdapter.submit`：结构/显示未变直接 return；`sortLabel` 变了才 `notifyItemChanged`。
+- `ArchiveShelfView`：`setBooks` 拆成「接收」+`applyBooks`；拖动 / 惯性滑行 / 吸附动画进行中收到的重排先存 `pendingBooks`，
+  `normalizeFocus()` 落位后再套用；列表中途被清空时用上次焦点书（`lastFocusedUrl`）找回位置。
+
+### 7. 3.26.112830（朗读悬浮窗按键 + 位置）
+
+- **按键点不动**：触摸监听原来同时挂到容器和每个按钮，手指移动过 6dp 就判成拖动、对 MOVE `return true` 吃掉事件，
+  子 View 收不到 UP，点击被吞。现在只给容器挂监听、按钮 `isClickable = false`，抬起时按坐标命中按钮直接调动作
+  （不用 `performClick()`：不可点击的 View 上它不回调），拖动阈值改用系统 `scaledTouchSlop`。
+- **浮窗可能整个在屏幕外**：`readAloudFloatX` 只 `coerceAtLeast(0)`，向右拖过屏边会把大于屏宽的值写进 prefs，
+  之后永远在屏幕外且覆盖安装也带着。现在读取 / 拖动 / 保存都 `coerceIn(0, 屏宽 - 浮窗宽 - 8dp)`，
+  显示后再按真实宽度量一次自愈。
+- 系统悬浮窗 `addView` 失败（ROM 拦 overlay）时退回 App 内悬浮；`floatingView` 引用还在但视图已脱离窗口时清掉重建。
 
 ---
 

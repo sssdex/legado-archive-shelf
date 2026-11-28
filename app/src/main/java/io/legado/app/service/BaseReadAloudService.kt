@@ -171,6 +171,8 @@ abstract class BaseReadAloudService : BaseService(),
     private var floatingWindowManager: WindowManager? = null
     private var floatingParams: WindowManager.LayoutParams? = null
     private var floatingView: View? = null
+    /** 浮窗里每个按键对应的动作，抬起时按坐标命中谁就调谁 */
+    private val floatingClickActions = HashMap<View, () -> Unit>()
     private var floatingCoverView: ImageView? = null
     private var floatingPlayPauseView: ImageView? = null
     private var floatingLoadingAnimator: ObjectAnimator? = null
@@ -182,6 +184,8 @@ abstract class BaseReadAloudService : BaseService(),
     private val isDesktopFloating: Boolean get() = floatingWindowManager != null
     private val floatingHeight get() = 50.dpToPx()
     private val floatingMinY get() = 24.dpToPx()
+    /** 超过这个位移就算拖动，不再算点击（用系统的 touch slop，比原来写死的 6dp 宽容） */
+    private val dragSlop get() = ViewConfiguration.get(this).scaledTouchSlop
     private val appFloatingLifecycleCallbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
         override fun onActivityStarted(activity: Activity) = Unit
@@ -292,7 +296,10 @@ abstract class BaseReadAloudService : BaseService(),
             floatingView = view
             onReadAloudFloatingAttached(view)
         }.onFailure {
+            // 系统悬浮窗被拒/被 ROM 拦下时退回「App 内悬浮」，别什么都不显示
             AppLog.put("显示朗读悬浮窗失败\n${it.localizedMessage}", it)
+            runCatching { clearReadAloudFloatingRefs() }
+            showAppReadAloudFloatingWindow()
         }
     }
 
@@ -325,6 +332,19 @@ abstract class BaseReadAloudService : BaseService(),
         updateReadAloudFloatingCover()
         updateReadAloudFloatingPlayState()
         applyReadAloudFloatingAvoidance(currentAvoidanceY)
+        // 量出真实宽度后把位置收进屏幕：老版本存下来的 X 可能比屏还宽（浮窗整个在屏幕外）
+        view.post {
+            val maxX = floatingMaxX()
+            val frameParams = view.layoutParams as? FrameLayout.LayoutParams
+            val currentX = floatingParams?.x ?: frameParams?.leftMargin ?: 0
+            if (currentX > maxX) {
+                updateReadAloudFloatingPosition(
+                    view, maxX,
+                    floatingParams?.y ?: readAloudFloatingY()
+                )
+                saveReadAloudFloatingPosition(maxX, floatingParams?.y ?: readAloudFloatingY())
+            }
+        }
     }
 
     private fun createReadAloudFloatingView(): View {
@@ -356,7 +376,6 @@ abstract class BaseReadAloudService : BaseService(),
                 clipToOutline = true
             }
             contentDescription = getString(R.string.continue_read)
-            setOnClickListener { openReadAloudBook() }
         }
         container.addView(floatingCoverView, LinearLayout.LayoutParams(coverSize, coverSize))
         floatingPlayPauseView = ImageView(this).apply {
@@ -368,13 +387,6 @@ abstract class BaseReadAloudService : BaseService(),
                 setStroke(2.dpToPx(), Color.argb(84, 255, 255, 255))
             }
             contentDescription = getString(R.string.read_aloud_pause_resume)
-            setOnClickListener {
-                if (pause) {
-                    ReadAloud.resume(this@BaseReadAloudService)
-                } else {
-                    ReadAloud.pause(this@BaseReadAloudService)
-                }
-            }
         }
         container.addView(
             floatingPlayPauseView,
@@ -388,12 +400,23 @@ abstract class BaseReadAloudService : BaseService(),
             setColorFilter(Color.WHITE)
             setPadding(8.dpToPx())
             contentDescription = getString(R.string.stop)
-            setOnClickListener {
-                postEvent(EventBus.CLOSE_READ_ALOUD_DIALOG, true)
-                ReadAloud.stop(this@BaseReadAloudService)
-            }
         }
         container.addView(closeView, LinearLayout.LayoutParams(iconSize, iconSize))
+        // 点击动作自己登记，抬起时按坐标命中直接调用：
+        // 视图设了 isClickable=false（不吃 DOWN），走 performClick 不可靠
+        floatingClickActions.clear()
+        floatingClickActions[floatingCoverView!!] = { openReadAloudBook() }
+        floatingClickActions[floatingPlayPauseView!!] = {
+            if (pause) {
+                ReadAloud.resume(this)
+            } else {
+                ReadAloud.pause(this)
+            }
+        }
+        floatingClickActions[closeView] = {
+            postEvent(EventBus.CLOSE_READ_ALOUD_DIALOG, true)
+            ReadAloud.stop(this)
+        }
         return FrameLayout(this).apply {
             addView(
                 container,
@@ -472,6 +495,7 @@ abstract class BaseReadAloudService : BaseService(),
     private fun clearReadAloudFloatingRefs() {
         floatingLoadingAnimator?.cancel()
         floatingLoadingAnimator = null
+        floatingClickActions.clear()
         floatingPlayPauseView?.rotation = 0f
         floatingView = null
         floatingParams = null
@@ -653,7 +677,8 @@ abstract class BaseReadAloudService : BaseService(),
             val inside = rawX >= location[0] && rawX <= location[0] + view.width &&
                     rawY >= location[1] && rawY <= location[1] + view.height
             if (!inside) return false
-            return view.performClick()
+            floatingClickActions[view]?.invoke()
+            return true
         }
         return hit(root)
     }
