@@ -20,8 +20,13 @@ class ArchiveShelfHeaderAdapter(
     private var visibleCount = ArchiveShelfGeometry.DEFAULT_VISIBLE_COUNT
     private var shelfVisible = true
 
-    /** 当前排序方式，显示在排序按钮上 */
+    /** 当前排序方式，显示在排序按钮上（变了才重绑，避免进度刷新时白刷一遍头部） */
     var sortLabel: String = ""
+        set(value) {
+            if (field == value) return
+            field = value
+            notifyItemChanged(0)
+        }
 
     var onSortClick: (() -> Unit)? = null
 
@@ -38,9 +43,18 @@ class ArchiveShelfHeaderAdapter(
 
     override fun getItemCount(): Int = 1
 
+    /**
+     * 提交书架数据。
+     *
+     * 听书/音频书在播时播放器每 500ms 写一次 books 表，这里也会跟着被调用一次。
+     * 立体书架的画面只取决于「有哪几本书、顺序如何」以及书名/作者/封面，
+     * 这些都没变就直接返回，不重绑 —— 否则每次进度写入都会让整个头部重新布局一遍。
+     */
     fun submit(list: List<Book>, count: Int) {
+        val unchanged = count == visibleCount && list.sameArchiveDisplay(books)
         books = list
         visibleCount = count
+        if (unchanged) return
         notifyItemChanged(0)
     }
 

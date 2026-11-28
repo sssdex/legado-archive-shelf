@@ -36,6 +36,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
@@ -127,6 +128,8 @@ abstract class BaseReadAloudService : BaseService(),
 
         private const val TAG = "BaseReadAloudService"
         private const val MIN_READ_ALOUD_PRELOAD_LENGTH = 300
+        /** 浮窗还没量出宽度时，按这个上限估算（封面 40 + 两个按钮 + 内边距，约 150dp） */
+        private const val FLOATING_LIMIT_WIDTH_DP = 150
 
     }
 
@@ -250,8 +253,11 @@ abstract class BaseReadAloudService : BaseService(),
             upReadAloudNotification()
             return
         }
-        if (floatingView != null) {
-            return
+        // 引用还在、视图却已经不在任何窗口里（活动/窗口被重建，或被系统摘掉）时，
+        // 只靠 floatingView != null 判断会让浮窗再也出不来，这里清掉引用重建一个
+        floatingView?.let { view ->
+            if (isDesktopFloating || view.parent != null) return
+            clearReadAloudFloatingRefs()
         }
         if (canDrawFloatingWindow()) {
             showDesktopReadAloudFloatingWindow()
@@ -520,7 +526,19 @@ abstract class BaseReadAloudService : BaseService(),
 
     private fun readAloudFloatingX(): Int {
         return appCtx.getPrefInt(PreferKey.readAloudFloatX, defaultReadAloudFloatingX())
-            .coerceAtLeast(0)
+            .coerceIn(0, floatingMaxX())
+    }
+
+    /**
+     * 浮窗左边距的上限。
+     *
+     * 以前 X 只 `coerceAtLeast(0)`，往右拖过屏幕边缘就会把一个比屏宽还大的值存进
+     * prefs，之后每次显示浮窗都被摆到屏幕外面 —— 表现就是「浮窗怎么都不出来」，
+     * 而且覆盖安装也带着这堆 prefs，不会自己好。
+     */
+    private fun floatingMaxX(): Int {
+        val width = floatingView?.width?.takeIf { it > 0 } ?: FLOATING_LIMIT_WIDTH_DP.dpToPx()
+        return (resources.displayMetrics.widthPixels - width - 8.dpToPx()).coerceAtLeast(0)
     }
 
     private fun readAloudFloatingY(): Int {
@@ -564,7 +582,7 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     private fun updateReadAloudFloatingPosition(view: View, x: Int, y: Int) {
-        val fixedX = x.coerceAtLeast(0)
+        val fixedX = x.coerceIn(0, floatingMaxX())
         val params = floatingParams
         val manager = floatingWindowManager
         if (params != null && manager != null) {
@@ -584,7 +602,7 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     private fun saveReadAloudFloatingPosition(x: Int, y: Int) {
-        appCtx.putPrefInt(PreferKey.readAloudFloatX, x.coerceAtLeast(0))
+        appCtx.putPrefInt(PreferKey.readAloudFloatX, x.coerceIn(0, floatingMaxX()))
         val screenY = if (isDesktopFloating) desktopYToScreenY(y) else y
         appCtx.putPrefInt(PreferKey.readAloudFloatY, coerceReadAloudFloatingY(screenY))
     }
@@ -595,17 +613,49 @@ abstract class BaseReadAloudService : BaseService(),
         return rootLocation[1]
     }
 
+    /**
+     * 浮窗整体可拖动，点击由 [ReadAloudFloatingTouchListener] 在抬起时统一分发。
+     *
+     * 以前是把同一个触摸监听挂到容器和每个按钮上：手指只要动过 6dp 就被判成拖动，
+     * 监听把 MOVE 吃掉（返回 true），子 View 再也收不到 UP，点击事件被吞掉 ——
+     * 表现就是「悬浮按键点不动」。现在只挂容器，按钮设成不可点击（触摸不吃），
+     * OnClickListener 保留着，抬起时按坐标命中哪个按钮就 performClick 哪个。
+     */
     private fun attachReadAloudFloatingTouch(view: View) {
-        val listener = ReadAloudFloatingTouchListener(view)
-        fun attach(target: View) {
-            target.setOnTouchListener(listener)
-            if (target is ViewGroup) {
-                for (index in 0 until target.childCount) {
-                    attach(target.getChildAt(index))
-                }
+        markFloatingClicksCentralized(view)
+        view.setOnTouchListener(ReadAloudFloatingTouchListener(view))
+    }
+
+    private fun markFloatingClicksCentralized(view: View) {
+        if (view is ViewGroup) {
+            for (index in 0 until view.childCount) {
+                markFloatingClicksCentralized(view.getChildAt(index))
             }
+        } else if (view is ImageView) {
+            // 触摸交给容器统一处理，OnClickListener 仍然有效，只是不再由 View 自己吃触摸
+            view.isClickable = false
         }
-        attach(view)
+    }
+
+    /** 抬起时按屏幕坐标命中哪个按钮就点哪个 */
+    private fun dispatchFloatingClick(root: View, rawX: Float, rawY: Float): Boolean {
+        val location = IntArray(2)
+        fun hit(view: View): Boolean {
+            if (view.visibility != View.VISIBLE) return false
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    if (hit(view.getChildAt(index))) return true
+                }
+                return false
+            }
+            if (view !is ImageView) return false
+            view.getLocationOnScreen(location)
+            val inside = rawX >= location[0] && rawX <= location[0] + view.width &&
+                    rawY >= location[1] && rawY <= location[1] + view.height
+            if (!inside) return false
+            return view.performClick()
+        }
+        return hit(root)
     }
 
     private inner class ReadAloudFloatingTouchListener(
@@ -618,7 +668,7 @@ abstract class BaseReadAloudService : BaseService(),
         private var isClick = true
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
-            when (event.action) {
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     val frameParams = dragView.layoutParams as? FrameLayout.LayoutParams
                     initialX = floatingParams?.x ?: frameParams?.leftMargin ?: 0
@@ -629,20 +679,39 @@ abstract class BaseReadAloudService : BaseService(),
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     isClick = true
-                    return false
+                    // 自己吃掉 DOWN：按钮不再单独吃触摸，否则 MOVE 被吞后按钮收不到 UP
+                    return true
                 }
 
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
-                    if (kotlin.math.abs(dx) > 6.dpToPx() || kotlin.math.abs(dy) > 6.dpToPx()) {
+                    if (isClick && (kotlin.math.abs(dx) > dragSlop || kotlin.math.abs(dy) > dragSlop)) {
                         isClick = false
-                        updateReadAloudFloatingPosition(dragView, initialX + dx, initialY + dy)
-                        return true
                     }
+                    if (!isClick) {
+                        updateReadAloudFloatingPosition(dragView, initialX + dx, initialY + dy)
+                    }
+                    return true
                 }
 
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
+                    if (isClick) {
+                        dispatchFloatingClick(dragView, event.rawX, event.rawY)
+                    } else {
+                        val frameParams = dragView.layoutParams as? FrameLayout.LayoutParams
+                        saveReadAloudFloatingPosition(
+                            floatingParams?.x ?: frameParams?.leftMargin ?: initialX,
+                            floatingParams?.y ?: (
+                                    (frameParams?.topMargin ?: initialY) +
+                                            ((dragView.parent as? View)?.let { rootTopOnScreen(it) } ?: 0)
+                                    )
+                        )
+                    }
+                    return true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
                     if (!isClick) {
                         val frameParams = dragView.layoutParams as? FrameLayout.LayoutParams
                         saveReadAloudFloatingPosition(
@@ -653,7 +722,7 @@ abstract class BaseReadAloudService : BaseService(),
                                     )
                         )
                     }
-                    return !isClick
+                    return true
                 }
             }
             return false

@@ -1,5 +1,6 @@
 package io.legado.app.ui.main.bookshelf.archive
 
+import io.legado.app.data.entities.Book
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -100,3 +101,38 @@ object ArchiveShelfGeometry {
         return y >= top && y <= bottom
     }
 }
+
+/**
+ * 两份书单在「画面」上是否等价：顺序一致，且书架/书目用到的字段都一致。
+ *
+ * 听书、音频书在播的时候播放器每 500ms 就往 books 表写一次进度和阅读时间，
+ * 那些字段书架根本不画。原来只要表一变就重绑头部（请求布局 + 重排焦点 + 重新要封面），
+ * 手还在滑的时候就被拽回去，看着就是「卡」和「两本书之间来回跳」。
+ * 进度之外的字段（书名/作者/封面）变了才算真的变了。
+ */
+internal fun List<Book>.sameArchiveDisplay(
+    other: List<Book>
+): Boolean {
+    if (!sameArchiveOrder(other)) return false
+    for (i in indices) {
+        val a = this[i]
+        val b = other[i]
+        if (a.name != b.name ||
+            a.author != b.author ||
+            a.getDisplayCover() != b.getDisplayCover()
+        ) {
+            return false
+        }
+    }
+    return true
+}
+
+/** 两份书单的顺序是否一致（只比 bookUrl） */
+internal fun List<Book>.sameArchiveOrder(other: List<Book>): Boolean {
+    if (size != other.size) return false
+    for (i in indices) {
+        if (this[i].bookUrl != other[i].bookUrl) return false
+    }
+    return true
+}
+

@@ -188,6 +188,11 @@ class ArchiveShelfView @JvmOverloads constructor(
      * 提交书架数据。
      *
      * 刷新时按 bookUrl 找回原来的焦点书，避免详情页返回或目录更新后书架跳回第一本。
+     *
+     * 注意：听书/音频书在播的时候，播放器每 500ms 就把进度写进 books 表一次，书架这边
+     * 就会跟着收到一次刷新。所以进度字段变了不算变化；书的顺序真变了也要等手势落位再套用，
+     * 否则 scroller / 吸附动画每一帧都按旧顺序重算 [focus]，手滑到半格时会被拽回最近一本，
+     * 看起来就是「卡」和「两本书之间来回跳」。
      */
     fun setBooks(list: List<Book>, visibleCount: Int = ArchiveShelfGeometry.DEFAULT_VISIBLE_COUNT) {
         val limited = list.take(
@@ -196,36 +201,69 @@ class ArchiveShelfView @JvmOverloads constructor(
                 ArchiveShelfGeometry.MAX_VISIBLE_COUNT
             )
         )
-        val anchorUrl = books.getOrNull(focusedIndex)?.bookUrl
-        val sameBooks = limited.size == books.size &&
-            limited.indices.all { limited[it].bookUrl == books[it].bookUrl }
-        books = limited
-        if (!sameBooks) {
-            val newIndex = anchorUrl?.let { url -> limited.indexOfFirst { it.bookUrl == url } } ?: -1
-            // 循环滑动后 focus 是一个可以无限延伸的游标，落位时折回 0..count-1
-            focus = if (newIndex >= 0) {
-                newIndex.toFloat()
-            } else {
-                focus.coerceIn(0f, (limited.size - 1).coerceAtLeast(0).toFloat())
-            }
+        if (isInteracting() && !limited.sameArchiveOrder(books)) {
+            pendingBooks = limited to visibleCount
+            return
         }
+        applyBooks(limited)
+    }
+
+    private fun applyBooks(limited: List<Book>) {
+        val oldFocusIndex = focusedIndex
+        // 列表可能在换分组/换排序的瞬间被清空过一次，那时 books 里找不到锚点，
+        // 用上一次稳定落位的书兜底，免得焦点掉回第一本
+        val anchorUrl = books.getOrNull(oldFocusIndex)?.bookUrl ?: lastFocusedUrl
+        val sameOrder = limited.sameArchiveOrder(books)
+        val sameDisplay = sameOrder && limited.sameArchiveDisplay(books)
+        books = limited
         if (limited.isEmpty()) {
             focus = 0f
-        } else if (!dragging) {
+            lastHapticLane = 0
+            contentDescription = null
+            requestLayout()
+            invalidate()
+            return
+        }
+        val interacting = isInteracting()
+        if (!sameOrder) {
+            val newIndex = anchorUrl?.let { url -> limited.indexOfFirst { it.bookUrl == url } } ?: -1
+            if (newIndex >= 0) {
+                // 焦点跟着同一本书平移同样的格数，半格的位移量原样保留
+                focus += (newIndex - oldFocusIndex)
+            } else {
+                // 原来那本书没了（删除/换组），只能就近落位
+                focus = if (interacting) {
+                    focus.coerceIn(0f, (limited.size - 1).toFloat())
+                } else {
+                    ArchiveShelfGeometry.bookIndex(focus.roundToInt(), limited.size).toFloat()
+                }
+            }
+            coverTargets.keys.retainAll(limited.map { it.bookUrl }.toHashSet())
+            covers.keys.retainAll(limited.map { it.bookUrl }.toHashSet())
+            requestCovers()
+            requestLayout()
+            invalidate()
+        } else if (!sameDisplay) {
+            // 只有书名/作者/封面变了：重画就行，焦点和进度一概不动
+            invalidate()
+        } else if (!interacting) {
+            // 循环书架的游标折回 0..count-1，只在停稳时做（每个 lane 对应的书按取模不变，画面等价）
             focus = ArchiveShelfGeometry.bookIndex(focus.roundToInt(), limited.size).toFloat()
         }
         lastHapticLane = focus.roundToInt()
-        coverTargets.keys.retainAll(limited.map { it.bookUrl }.toHashSet())
-        covers.keys.retainAll(limited.map { it.bookUrl }.toHashSet())
-        requestCovers()
-        contentDescription = if (books.isEmpty()) {
-            null
-        } else {
-            "立体书架 ${focusedIndex + 1}/${books.size} ${books[focusedIndex].name}"
-        }
-        requestLayout()
-        invalidate()
+        lastFocusedUrl = books.getOrNull(focusedIndex)?.bookUrl
+        contentDescription = "立体书架 ${focusedIndex + 1}/${books.size} ${books[focusedIndex].name}"
     }
+
+    /** 上一次稳定落位时的焦点书，列表中途被清空时用它把焦点找回来 */
+    private var lastFocusedUrl: String? = null
+
+    /** 手势进行中收到的重排，等落位后再套用 */
+    private var pendingBooks: Pair<List<Book>, Int>? = null
+
+    /** 手上/动画里是否还有未落位的滑动（此时任何重排都不该动 [focus]） */
+    private fun isInteracting(): Boolean =
+        dragging || settleAnimator?.isRunning == true || !scroller.isFinished
 
     // ------------------------------------------------------------------ 尺寸
 
@@ -865,6 +903,11 @@ class ArchiveShelfView @JvmOverloads constructor(
      * 不会出现跳动；长期滑动也不会让 focus 涨到浮点精度变差。
      */
     private fun normalizeFocus() {
+        // 手势落位了，把动画期间攒下的重排补上
+        pendingBooks?.let { (list, count) ->
+            pendingBooks = null
+            setBooks(list, count)
+        }
         if (books.isEmpty()) {
             focus = 0f
             lastHapticLane = 0
